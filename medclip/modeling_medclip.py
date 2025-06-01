@@ -9,6 +9,7 @@ from torch import nn
 from transformers import AutoModel, AutoTokenizer
 import numpy as np
 import torchvision
+import timm
 
 from . import constants
 
@@ -30,10 +31,10 @@ class ProjectionHead(nn.Module):
 class MedCLIPTextModel(nn.Module):
     def __init__(self, bert_type=constants.BERT_TYPE, proj_dim=512, proj_bias=False, use_projection=True, non_linear=False):
         super().__init__()
-        self.proj_dim = proj_dim
         self.model = AutoModel.from_pretrained(bert_type, output_hidden_states=True)
         self.projection_head = nn.Linear(768, proj_dim, bias=proj_bias)
-        self.intermediate_layer = ProjectionHead(self.proj_dim, 1024) # set up 1024 as output dimension for projection head
+        if use_projection:
+            self.intermediate_layer = ProjectionHead(proj_dim, 256) # set up 1024 as output dimension for projection head
 
     def forward(self, input_ids, attention_mask, use_projection=True):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)
@@ -44,15 +45,32 @@ class MedCLIPTextModel(nn.Module):
             embed = self.intermediate_layer(embed)
         return embed
 
+class MedCLIPVisionModelSwin(nn.Module):
+    def __init__(self, checkpoint=None, model_name='swin_base_patch4_window7_224', pretrained=True, proj_dim=512, use_projection=True, non_linear=False):
+        super().__init__()
+        self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)  # no classification head
+        in_features = self.model.num_features
+        self.fc = nn.Linear(in_features, proj_dim, bias=False)
+        if use_projection:
+            self.projection_head = ProjectionHead(proj_dim, 256, non_linear)
+
+    def forward(self, pixel_values, use_projection=True):
+        if pixel_values.shape[1] == 1:
+            pixel_values = pixel_values.repeat((1,3,1,1))
+        features = self.model(pixel_values)
+        features = self.fc(features)
+        if use_projection:
+            features = self.projection_head(features)
+        return features
+
 class MedCLIPVisionModel(nn.Module):
     def __init__(self, checkpoint=None, medclip_checkpoint=None, use_projection=True, proj_dim=512, non_linear=False):
         super().__init__()
         self.model = torchvision.models.resnet50(pretrained=True)
         num_fts = self.model.fc.in_features
         self.model.fc = nn.Linear(num_fts, proj_dim, bias=False)
-        self.proj_dim = proj_dim
         if use_projection:
-            self.projection_head = ProjectionHead(self.proj_dim, 1024, non_linear) # set up 1024 as output dimension for projection head
+            self.projection_head = ProjectionHead(proj_dim, 1024, non_linear) # set up 1024 as output dimension for projection head
         if checkpoint is not None:
             state_dict = torch.load(os.path.join(checkpoint, constants.WEIGHTS_NAME))
             missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)
@@ -134,11 +152,11 @@ class MedCLIPModel(nn.Module):
         checkpoint=None,
         vision_checkpoint=None,
         logit_scale_init_value=0.07,
-        project=True
+        project=False
         ) -> None:
         super().__init__()
         text_proj_bias = False
-        assert vision_cls in [MedCLIPVisionModel, MedCLIPVisionModelViT], 'vision_cls should be one of [MedCLIPVisionModel, MedCLIPVisionModelViT]'
+        assert vision_cls in [MedCLIPVisionModel, MedCLIPVisionModelViT, MedCLIPVisionModelSwin], 'vision_cls should be one of [MedCLIPVisionModel, MedCLIPVisionModelViT]'
 
         self.vision_model = vision_cls(checkpoint=vision_checkpoint, use_projection=project)
         self.text_model = MedCLIPTextModel(proj_bias=False, use_projection=project)
@@ -168,6 +186,10 @@ class MedCLIPModel(nn.Module):
             pretrained_url = constants.PRETRAINED_URL_MEDCLIP_VIT
             if input_dir is None:
                 input_dir = './pretrained/medclip-vit'
+        elif isinstance(self.vision_model, MedCLIPVisionModelSwin):
+            # Swin
+            # no pretrained checkpoint yet, we let it pass
+            input_dir = input_dir
         else:
             raise ValueError(f'We only have pretrained weight for MedCLIP-ViT or MedCLIP-ResNet, get {type(self.vision_model)} instead.')
 
@@ -188,7 +210,7 @@ class MedCLIPModel(nn.Module):
         self.load_state_dict(state_dict)
         print('load model weight from:', input_dir)
 
-    def encode_text(self, input_ids=None, attention_mask=None, use_projection=True):
+    def encode_text(self, input_ids=None, attention_mask=None, use_projection=False):
         input_ids = input_ids.cuda()
         if attention_mask is not None:
             attention_mask = attention_mask.cuda()
@@ -196,7 +218,7 @@ class MedCLIPModel(nn.Module):
         text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
         return text_embeds
 
-    def encode_image(self, pixel_values=None, use_projection=True):
+    def encode_image(self, pixel_values=None, use_projection=False):
         # image encoder
         vision_output = self.vision_model(pixel_values=pixel_values, use_projection=use_projection)
         img_embeds = vision_output / vision_output.norm(dim=-1, keepdim=True)
@@ -207,7 +229,7 @@ class MedCLIPModel(nn.Module):
         pixel_values=None,
         attention_mask=None,
         return_loss=None,
-        use_projection=True,
+        use_projection=False,
         **kwargs,
         ):
         input_ids = input_ids.cuda()
