@@ -12,21 +12,6 @@ import torchvision
 
 from . import constants
 
-class MedCLIPTextModel(nn.Module):
-    def __init__(self, bert_type=constants.BERT_TYPE, proj_dim=512, proj_bias=False, use_projection=True, non_linear=False):
-        super().__init__()
-        self.model = AutoModel.from_pretrained(bert_type, output_hidden_states=True)
-        if use_projection:
-            self.projection_head = ProjectionHead(768, proj_dim, non_linear)
-
-    def forward(self, input_ids, attention_mask, use_projection=True):
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask)
-        last_hidden_states = torch.stack([output['hidden_states'][1], output['hidden_states'][2], output['hidden_states'][-1]])
-        embed = last_hidden_states.permute(1,0,2,3).mean(2).mean(1)
-        if use_projection:
-            embed = self.projection_head(embed)
-        return embed
-
 class ProjectionHead(nn.Module):
     def __init__(self, input_dim, output_dim=512, non_linear=False):
         super().__init__()
@@ -38,17 +23,36 @@ class ProjectionHead(nn.Module):
             )
         else:
             self.proj = nn.Linear(input_dim, output_dim)
+
     def forward(self, x):
         return self.proj(x)
+
+class MedCLIPTextModel(nn.Module):
+    def __init__(self, bert_type=constants.BERT_TYPE, proj_dim=512, proj_bias=False, use_projection=True, non_linear=False):
+        super().__init__()
+        self.proj_dim = proj_dim
+        self.model = AutoModel.from_pretrained(bert_type, output_hidden_states=True)
+        self.projection_head = nn.Linear(768, proj_dim, bias=proj_bias)
+        self.intermediate_layer = ProjectionHead(self.proj_dim, 1024) # set up 1024 as output dimension for projection head
+
+    def forward(self, input_ids, attention_mask, use_projection=True):
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        last_hidden_states = torch.stack([output['hidden_states'][1], output['hidden_states'][2], output['hidden_states'][-1]])
+        embed = last_hidden_states.permute(1,0,2,3).mean(2).mean(1)
+        embed = self.projection_head(embed)
+        if use_projection:
+            embed = self.intermediate_layer(embed)
+        return embed
 
 class MedCLIPVisionModel(nn.Module):
     def __init__(self, checkpoint=None, medclip_checkpoint=None, use_projection=True, proj_dim=512, non_linear=False):
         super().__init__()
         self.model = torchvision.models.resnet50(pretrained=True)
         num_fts = self.model.fc.in_features
-        self.model.fc = nn.Identity()  # Remove the original classification head
+        self.model.fc = nn.Linear(num_fts, proj_dim, bias=False)
+        self.proj_dim = proj_dim
         if use_projection:
-            self.projection_head = ProjectionHead(num_fts, proj_dim, non_linear)
+            self.projection_head = ProjectionHead(self.proj_dim, 1024, non_linear) # set up 1024 as output dimension for projection head
         if checkpoint is not None:
             state_dict = torch.load(os.path.join(checkpoint, constants.WEIGHTS_NAME))
             missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)

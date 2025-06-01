@@ -139,6 +139,10 @@ local_data/mendeley
 local_data/spider
 local_data/mendeley.zip
 local_data/spider.zip
+local_data/mendeley.tar
+local_data/spider.tar
+
+wandb
 
 # checkpoints
 checkpoint

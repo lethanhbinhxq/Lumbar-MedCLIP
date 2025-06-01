@@ -177,9 +177,6 @@ class ImageTextContrastiveDataset(Dataset):
             self.transform = transforms.Compose([
                 # transforms.RandomHorizontalFlip(0.5),
                 # transforms.ColorJitter(0.1,0.1),
-                T.RandomRotation(degrees=10),
-                T.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-                T.RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0)),
                 transforms.ToTensor(),
                 transforms.Resize((constants.IMG_SIZE,constants.IMG_SIZE)),
                 transforms.Normalize(mean=[0.5862785803043838],std=[0.27950088968644304])],

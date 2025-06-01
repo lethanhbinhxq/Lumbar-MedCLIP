@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch import distributed as dist
 import transformers
+import wandb
 
 WEIGHTS_NAME = "pytorch_model.bin"
 
@@ -21,6 +22,8 @@ class Trainer:
     '''trainer for single-gpu training.
     '''
     def __init__(self, args=None):
+        wandb.login()
+        wandb.init(project="Lumbar-MedCLIP")
         pass
 
     def train(self,
@@ -158,6 +161,7 @@ class Trainer:
                     print('\n######### Train Loss #########')
                     for key in train_loss_dict.keys():
                         print('{} {:.4f} \n'.format(key, np.mean(train_loss_dict[key])))
+                        wandb.log({f"train_loss_{key}": np.mean(train_loss_dict[key])}, step=global_step)
                     train_loss_dict = defaultdict(list)
 
                     #TODO: update prompt sentences
@@ -184,6 +188,7 @@ class Trainer:
                     scores = self.evaluator.evaluate()
                     print(f'\n######### Eval {global_step} #########')
                     for key in scores.keys():
+                        wandb.log({f"eval_{key}": scores[key]}, step=global_step)
                         if key in ['acc','auc']:
                             print('{}: {:.4f}'.format(key, scores[key]))
                 
