@@ -134,20 +134,9 @@ dmypy.json
 .pyre/
 
 # dataset
-data
-local_data/mendeley
-local_data/spider
-local_data/mendeley.zip
-local_data/spider.zip
-local_data/mendeley.tar
-local_data/spider.tar
-
-wandb
+local_data/
 
 # checkpoints
-checkpoint
-ckpt
-checkpoints
 *.ckpt
 *.bin
 
@@ -157,5 +146,3 @@ chris
 *.cfg
 
 .vscode
-
-python-test.py

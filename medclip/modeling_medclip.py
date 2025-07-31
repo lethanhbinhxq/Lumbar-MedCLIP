@@ -34,7 +34,7 @@ class MedCLIPTextModel(nn.Module):
         self.model = AutoModel.from_pretrained(bert_type, output_hidden_states=True)
         self.projection_head = nn.Linear(768, proj_dim, bias=proj_bias)
         if use_projection:
-            self.intermediate_layer = ProjectionHead(proj_dim, 256) # set up 1024 as output dimension for projection head
+            self.intermediate_layer = ProjectionHead(proj_dim, 1024) # set up 1024 as output dimension for projection head
 
     def forward(self, input_ids, attention_mask, use_projection=True):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)
@@ -52,7 +52,7 @@ class MedCLIPVisionModelSwin(nn.Module):
         in_features = self.model.num_features
         self.fc = nn.Linear(in_features, proj_dim, bias=False)
         if use_projection:
-            self.projection_head = ProjectionHead(proj_dim, 256, non_linear)
+            self.projection_head = ProjectionHead(proj_dim, 1024, non_linear)
 
     def forward(self, pixel_values, use_projection=True):
         if pixel_values.shape[1] == 1:
@@ -69,6 +69,7 @@ class MedCLIPVisionModel(nn.Module):
         self.model = torchvision.models.resnet50(pretrained=True)
         num_fts = self.model.fc.in_features
         self.model.fc = nn.Linear(num_fts, proj_dim, bias=False)
+        self.projection_head = None
         if use_projection:
             self.projection_head = ProjectionHead(proj_dim, 1024, non_linear) # set up 1024 as output dimension for projection head
         if checkpoint is not None:
@@ -104,7 +105,7 @@ class MedCLIPVisionModel(nn.Module):
 class MedCLIPVisionModelViT(nn.Module):
     '''take an VIT model as the backbone.
     '''
-    def __init__(self, checkpoint=None, medclip_checkpoint=None) -> None:
+    def __init__(self, checkpoint=None, medclip_checkpoint=None, use_projection=True, proj_dim=512, non_linear=False) -> None:
         '''args:
         checkpoint: load from the vision encoder checkpoint
         medclip_checkpoint: load from the vision-text dual encoders checkpoint
@@ -112,7 +113,11 @@ class MedCLIPVisionModelViT(nn.Module):
         super().__init__()
         self.vit_type = constants.VIT_TYPE
         self.model = AutoModel.from_pretrained(self.vit_type)
-        self.projection_head = nn.Linear(768, 512, bias=False)
+        self.fc = nn.Linear(self.model.config.hidden_size, proj_dim, bias=False)
+        self.use_projection = use_projection
+        
+        if use_projection:
+            self.projection_head = ProjectionHead(proj_dim, 512, non_linear)
         if checkpoint is not None:
             state_dict = torch.load(os.path.join(checkpoint, constants.WEIGHTS_NAME))
             missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)
@@ -135,14 +140,15 @@ class MedCLIPVisionModelViT(nn.Module):
         print('unexpected keys:', unexpected_keys)
         print('load model weight from:', checkpoint)
 
-    def forward(self, pixel_values, project=True):
+    def forward(self, pixel_values, use_projection=True):
         '''args:
         pixel_values: tensor with shape [bs, 3, img_size, img_size]
         '''
         if pixel_values.shape[1] == 1: pixel_values = pixel_values.repeat((1,3,1,1))
         output = self.model(pixel_values)
         img_embeds = output['pooler_output']
-        if project:
+        img_embeds = self.fc(img_embeds)
+        if use_projection:
             img_embeds = self.projection_head(img_embeds)
         return img_embeds
 
@@ -152,7 +158,7 @@ class MedCLIPModel(nn.Module):
         checkpoint=None,
         vision_checkpoint=None,
         logit_scale_init_value=0.07,
-        project=False
+        project=True
         ) -> None:
         super().__init__()
         text_proj_bias = False
@@ -210,7 +216,7 @@ class MedCLIPModel(nn.Module):
         self.load_state_dict(state_dict)
         print('load model weight from:', input_dir)
 
-    def encode_text(self, input_ids=None, attention_mask=None, use_projection=False):
+    def encode_text(self, input_ids=None, attention_mask=None, use_projection=True):
         input_ids = input_ids.cuda()
         if attention_mask is not None:
             attention_mask = attention_mask.cuda()
@@ -218,7 +224,7 @@ class MedCLIPModel(nn.Module):
         text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
         return text_embeds
 
-    def encode_image(self, pixel_values=None, use_projection=False):
+    def encode_image(self, pixel_values=None, use_projection=True):
         # image encoder
         vision_output = self.vision_model(pixel_values=pixel_values, use_projection=use_projection)
         img_embeds = vision_output / vision_output.norm(dim=-1, keepdim=True)
@@ -229,7 +235,7 @@ class MedCLIPModel(nn.Module):
         pixel_values=None,
         attention_mask=None,
         return_loss=None,
-        use_projection=False,
+        use_projection=True,
         **kwargs,
         ):
         input_ids = input_ids.cuda()
@@ -286,7 +292,7 @@ class PromptClassifier(nn.Module):
 
             # TODO:
             # take soft mask over class_prompts to reach the similarities to classes
-            medclip_outputs = self.model(**inputs)
+            medclip_outputs = self.model(**inputs, use_projection=False)
             logits = medclip_outputs['logits']
 
             # take logits max as the class similarity
